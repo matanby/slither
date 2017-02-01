@@ -11,17 +11,17 @@ from policies import base_policy as bp
 
 # noinspection PyAttributeOutsideInit
 class DeepQLearningPolicy(bp.Policy):
-    DEFAULT_LEARNING_RATE = 1e-3
+    DEFAULT_LEARNING_RATE = 1e-2
     DEFAULT_EXPLORATION_PROB = 0.3
     MAX_MEMORY_STEPS = 300
-    MIN_EXPLORATION_PROB = 0.02
+    MIN_EXPLORATION_PROB = 0.05
     EXPLORATION_PROP_DECAY_STEP = 1000
-    DEFAULT_GAMMA = 0.1
-    MINI_BATCH_SIZE = 200
+    DEFAULT_GAMMA = 0.9
+    MINI_BATCH_SIZE = 500
     RANDOM_BATCH_SAMPLE = False
     OPTIMIZATION_STEP = 20
     CROP_SIZE = 3
-    OBSERVATION_TIME = 300
+    OBSERVATION_TIME = 400
     FC_NETWORK = True
     DEATH_PENALTY = -100
 
@@ -33,10 +33,15 @@ class DeepQLearningPolicy(bp.Policy):
     }
 
     def cast_string_args(self, policy_args):
-        policy_args['learning_rate'] = float(policy_args['lr']) if 'lr' in policy_args else self.DEFAULT_LEARNING_RATE
-        policy_args['exploration_prob'] = float(policy_args['e']) if 'e' in policy_args else self.DEFAULT_EXPLORATION_PROB
-        policy_args['gamma'] = float(policy_args['g']) if 'g' in policy_args else self.DEFAULT_GAMMA
-        return policy_args
+        return {
+            'learning_rate': float(policy_args.get('lr', self.DEFAULT_LEARNING_RATE)),
+            'exploration_prob': float(policy_args.get('e', self.DEFAULT_EXPLORATION_PROB)),
+            'min_exploration_prob': float(policy_args.get('e_min', self.MIN_EXPLORATION_PROB)),
+            'exploration_prop_decay_step': float(policy_args.get('e_ds', self.EXPLORATION_PROP_DECAY_STEP)),
+            'gamma': float(policy_args.get('g', self.DEFAULT_GAMMA)),
+            'mini_batch_size': int(policy_args.get('bs', self.MINI_BATCH_SIZE)),
+            'crop_size': int(policy_args.get('cs', self.CROP_SIZE)),
+        }
 
     def init_run(self):
         # Keep history of states, actions and rewards
@@ -56,7 +61,11 @@ class DeepQLearningPolicy(bp.Policy):
         # Log active configuration
         self.log('learning rate: %s' % self.learning_rate)
         self.log('exploration_prob: %s' % self.exploration_prob)
+        self.log('min_exploration_prob: %s' % self.min_exploration_prob)
+        self.log('exploration_prop_decay_step: %s' % self.exploration_prop_decay_step)
         self.log('gamma: %s' % self.gamma)
+        self.log('mini_batch_size: %s' % self.mini_batch_size)
+        self.log('crop_size: %s' % self.crop_size)
 
     def build_network(self):
         def weight_var(shape):
@@ -85,6 +94,7 @@ class DeepQLearningPolicy(bp.Policy):
             self._w1 = weight_var([self._state_size, N_HIDDEN1])
             self._b1 = bias_var([N_HIDDEN1])
             self._h1 = tf.nn.relu(tf.matmul(self._s, self._w1) + self._b1)
+
             self._w2 = weight_var([N_HIDDEN1, self._num_actions])
             self._b2 = bias_var([self._num_actions])
             self._q_out = tf.matmul(self._h1, self._w2) + self._b2
@@ -97,7 +107,7 @@ class DeepQLearningPolicy(bp.Policy):
             def max_pool_2x2(x):
                 return tf.nn.max_pool(x, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME')
 
-            s_reshaped = tf.reshape(self._s, [-1, 2 * self.CROP_SIZE + 1, 2 * self.CROP_SIZE + 1, self._board_objects_num])
+            s_reshaped = tf.reshape(self._s, [-1, 2 * self.crop_size + 1, 2 * self.crop_size + 1, self._board_objects_num])
 
             W_conv1 = weight_var([2, 2, self._board_objects_num, 3])
             b_conv1 = bias_var([3])
@@ -129,7 +139,7 @@ class DeepQLearningPolicy(bp.Policy):
         self._q_target = tf.placeholder(shape=[None, self._num_actions], dtype=tf.float32)
         self._action = tf.argmax(self._q_out, axis=1)
         self._loss = tf.reduce_mean(tf.reduce_sum(tf.square(self._q_target - self._q_out), reduction_indices=1))
-        self._optimizer = tf.train.AdamOptimizer(learning_rate=self.DEFAULT_LEARNING_RATE).minimize(self._loss)
+        self._optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self._loss)
         self._sess = tf.Session()
         self._sess.run(tf.initialize_all_variables())
 
@@ -145,7 +155,7 @@ class DeepQLearningPolicy(bp.Policy):
             if (self._time + 1) % self.OPTIMIZATION_STEP == 0:
                 self.optimize_policy()
 
-            if (t+1) % self.EXPLORATION_PROP_DECAY_STEP == 0:
+            if (t+1) % self.exploration_prop_decay_step == 0 and (self.exploration_prob / 2) > self.min_exploration_prob:
                 self.exploration_prob /= 2
                 self.log('lowering exploration_prob to: %.5f' % self.exploration_prob)
 
@@ -167,7 +177,7 @@ class DeepQLearningPolicy(bp.Policy):
             elif self._time == self.OBSERVATION_TIME:
                 self.log('Finished observation time, num of board objects: %d' % self._board_objects_num)
                 self.log('Objects: %s' % str(self._board_objects))
-                self._state_size = (2 * self.CROP_SIZE + 1) ** 2 * self._board_objects_num
+                self._state_size = (2 * self.crop_size + 1) ** 2 * self._board_objects_num
                 self.build_network()
 
             # Choose an action by trying to avoid collisions.
@@ -251,8 +261,8 @@ class DeepQLearningPolicy(bp.Policy):
         center_0 = self._board_height // 2
         center_1 = self._board_width // 2
         state = state[
-                center_0 - self.CROP_SIZE: center_0 + self.CROP_SIZE + 1,
-                center_1 - self.CROP_SIZE: center_1 + self.CROP_SIZE + 1
+                center_0 - self.crop_size: center_0 + self.crop_size + 1,
+                center_1 - self.crop_size: center_1 + self.crop_size + 1
         ]
 
         return state
@@ -273,7 +283,7 @@ class DeepQLearningPolicy(bp.Policy):
         return None
 
     def optimize_policy(self):
-        batch_size = min(len(self._memory), self.MINI_BATCH_SIZE)
+        batch_size = min(len(self._memory), self.mini_batch_size)
         if self.RANDOM_BATCH_SAMPLE:
             batch = random.sample(list(self._memory.values()), batch_size)
         else:
