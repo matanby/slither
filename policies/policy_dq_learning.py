@@ -9,10 +9,10 @@ from policies import base_policy as bp
 
 # noinspection PyAttributeOutsideInit
 class DeepQLearningPolicy(bp.Policy):
-    DEFAULT_LEARNING_RATE = 1e-5
-    DEFAULT_EXPLORATION_PROB = 0.2
+    DEFAULT_LEARNING_RATE = 1e-3
+    DEFAULT_EXPLORATION_PROB = 0.3
     MIN_EXPLORATION_PROB = 0.02
-    DEFAULT_GAMMA = 0.99
+    DEFAULT_GAMMA = 0.1
     MAX_MEMORY_STEPS = 300
     MINI_BATCH_SIZE = 200
     CROP_SIZE = 3
@@ -45,7 +45,7 @@ class DeepQLearningPolicy(bp.Policy):
         self.log('gamma: %s' % self.gamma)
 
     def build_network(self):
-        n_hidden1 = 512
+        n_hidden1 = 1024
 
         def weight_var(shape):
             initial = tf.truncated_normal(shape, stddev=0.1)
@@ -66,8 +66,8 @@ class DeepQLearningPolicy(bp.Policy):
         self._board_height = self.board_size[0] if self.board_size[0] % 2 == 1 else self.board_size[0] - 1
         self._board_width = self.board_size[1] if self.board_size[1] % 2 == 1 else self.board_size[1] - 1
         # self._state_size = self._board_height * self._board_width
-        # self._state_size = (2 * self.CROP_SIZE + 1)**2 * 3
-        self._state_size = (2 * self.CROP_SIZE + 1)**2
+        LAYERS = 3
+        self._state_size = (2 * self.CROP_SIZE + 1)**2 * LAYERS
 
         self._num_actions = len(self.ACTIONS)
         self._s = tf.placeholder(shape=[None, self._state_size], dtype=tf.float32)
@@ -77,36 +77,36 @@ class DeepQLearningPolicy(bp.Policy):
         # self._q_out = tf.matmul(self._s, self._w1) + self._b1
 
         ####
-        # self._w1 = weight_var([self._state_size, n_hidden1])
-        # self._b1 = bias_var([n_hidden1])
-        # self._h1 = tf.nn.relu(tf.matmul(self._s, self._w1) + self._b1)
-        # self._w2 = weight_var([n_hidden1, self._num_actions])
-        # self._b2 = bias_var([self._num_actions])
-        # self._q_out = tf.matmul(self._h1, self._w2) + self._b2
+        self._w1 = weight_var([self._state_size, n_hidden1])
+        self._b1 = bias_var([n_hidden1])
+        self._h1 = tf.nn.relu(tf.matmul(self._s, self._w1) + self._b1)
+        self._w2 = weight_var([n_hidden1, self._num_actions])
+        self._b2 = bias_var([self._num_actions])
+        self._q_out = tf.matmul(self._h1, self._w2) + self._b2
 
         ###
-        s_reshaped = tf.reshape(self._s, [-1, 2 * self.CROP_SIZE + 1, 2 * self.CROP_SIZE + 1, 1])
-
-        W_conv1 = weight_var([1, 1, 1, 32])
-        b_conv1 = bias_var([32])
-
-        h_conv1 = tf.nn.relu(conv2d(s_reshaped, W_conv1) + b_conv1)
-        h_pool1 = max_pool_2x2(h_conv1)
-
-        W_conv2 = weight_var([2, 2, 32, 64])
-        b_conv2 = bias_var([64])
-
-        h_conv2 = tf.nn.relu(conv2d(h_pool1, W_conv2) + b_conv2)
-        h_pool2 = max_pool_2x2(h_conv2)
-
-        h_pool2_shape = h_pool2.get_shape()
-        new_dim = int(h_pool2_shape[1] * h_pool2_shape[2] * h_pool2_shape[3])
-
-        W_fc1 = weight_var([new_dim, self._num_actions])
-        b_fc1 = bias_var([self._num_actions])
-
-        h_pool2_flat = tf.reshape(h_pool2, [-1, new_dim])
-        self._q_out = tf.nn.relu(tf.matmul(h_pool2_flat, W_fc1) + b_fc1)
+        # s_reshaped = tf.reshape(self._s, [-1, 2 * self.CROP_SIZE + 1, 2 * self.CROP_SIZE + 1, LAYERS])
+        #
+        # W_conv1 = weight_var([2, 2, LAYERS, 3])
+        # b_conv1 = bias_var([3])
+        #
+        # h_conv1 = tf.nn.relu(conv2d(s_reshaped, W_conv1) + b_conv1)
+        # h_pool1 = max_pool_2x2(h_conv1)
+        #
+        # W_conv2 = weight_var([2, 2, 3, 6])
+        # b_conv2 = bias_var([6])
+        #
+        # h_conv2 = tf.nn.relu(conv2d(h_pool1, W_conv2) + b_conv2)
+        # h_pool2 = max_pool_2x2(h_conv2)
+        #
+        # h_pool2_shape = h_pool2.get_shape()
+        # new_dim = int(h_pool2_shape[1] * h_pool2_shape[2] * h_pool2_shape[3])
+        #
+        # W_fc1 = weight_var([new_dim, self._num_actions])
+        # b_fc1 = bias_var([self._num_actions])
+        #
+        # h_pool2_flat = tf.reshape(h_pool2, [-1, new_dim])
+        # self._q_out = tf.nn.relu(tf.matmul(h_pool2_flat, W_fc1) + b_fc1)
 
         # h_fc1 = tf.nn.relu(tf.matmul(h_pool2_flat, W_fc1) + b_fc1)
         # W_fc2 = weight_var([256, self._num_actions])
@@ -147,7 +147,7 @@ class DeepQLearningPolicy(bp.Policy):
             player_head = player_state['chain'][-1]
             player_direction = player_state['dir']
             state_norm = self.normalize_state(state, player_head[0], player_head[1], player_direction)
-            # state_norm = self.split_layers(state_norm)
+            state_norm = self.split_layers(state_norm)
             state_vec = state_norm.reshape((1, self._state_size))
 
             # self._previous_state = state_norm
@@ -170,8 +170,9 @@ class DeepQLearningPolicy(bp.Policy):
                 action = int(self._sess.run([self._action], feed_dict={self._s: state_vec})[0])
 
             #####
-            # q_out = self._sess.run([self._q_out], feed_dict={self._s: state_vec})[0]
-            # self.log('%s' % q_out)
+            if self._time % 20 == 0:
+                q_out = self._sess.run([self._q_out], feed_dict={self._s: state_vec})[0]
+                self.log('%s' % q_out)
 
             self._memory.setdefault(t, [None, None, None, None])
             self._memory[t][0] = state_vec
