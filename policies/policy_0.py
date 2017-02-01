@@ -9,7 +9,6 @@ class AvoidCollisions(bp.Policy):
         return policy_args
 
     def init_run(self):
-        #print(self.example)
         self.r_sum = 0
 
     def learn(self, reward, t):
@@ -28,4 +27,4 @@ class AvoidCollisions(bp.Policy):
         return a
 
     def get_state(self):
-        return None
+        return (np.random.permutation(bp.Policy.ACTIONS))

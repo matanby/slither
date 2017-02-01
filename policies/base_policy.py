@@ -1,5 +1,6 @@
 import sys
 import multiprocessing as mp
+import traceback
 
 import numpy as np
 np.set_printoptions(threshold=np.nan)
@@ -58,10 +59,11 @@ class Policy(mp.Process):
         'E': {'CC': 'N', 'CW': 'S', 'CN': 'E'}
     }
 
-    def __init__(self, policy_args, board_size, stateq, actq, logq, id):
+    def __init__(self, policy_args, board_size, stateq, actq, modelq, logq, id):
         mp.Process.__init__(self)
         self.sq = stateq
         self.aq = actq
+        self.mq = modelq
         self.lq = logq
         self.id = id
         self.board_size = board_size
@@ -81,14 +83,15 @@ class Policy(mp.Process):
         try:
             self.init_run()
             for input in iter(self.sq.get, None):
-                if input[0] == 'get_state':
-                    self.aq.put(self.get_state())
+                if input == 'get_state':
+                    self.mq.put(self.get_state())
                 else:
                     t, state, player_state, reward = input
                     self.learn(reward, t)
-                    self.aq.put(self.act(t, state, player_state))
-        except:
-            self.log( "policy %s is down." % str(self), type='error')
+                    self.aq.put((t, self.act(t, state, player_state)))
+        except Exception as e:
+            tb_str = '%'.join([l.replace('\n','**') for l in traceback.format_tb(e.__traceback__)])
+            self.log("policy %s is down: %s" % (str(self), tb_str), type='error')
             for input in iter(self.sq.get, None):
                 if input[0] == 'get_state': self.aq.put(None)
 
@@ -110,7 +113,7 @@ class Policy(mp.Process):
         :param t: the time, in case timesteps are missed
         :param state: the game board
         :param player_state: a tuple of (position, direction)
-        :return: A single action from Policy.Actions
+        :return: an action (from Policy.Actions) in response to the state at round t
         """
         raise NotImplementedError
 

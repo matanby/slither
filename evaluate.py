@@ -10,7 +10,7 @@ import pickle
 from itertools import combinations
 from collections import Counter
 
-INTERPRETER = '/cs/wetlab/Alon/hackathon/slitherenv/bin/python3.5'
+INTERPRETER = '/cs/wetlab/Alon/website/slitherenv/bin/python3.5'
 
 if not sys.executable == INTERPRETER:  # divert to the "right" interpreter
     scriptpath = os.path.abspath(sys.modules[__name__].__file__)

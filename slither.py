@@ -75,12 +75,13 @@ class Player(object):
         self.chain = []
         self.len = 0
         self.was_initialized = False
-        self.cummulative_reward = 0
         self.policy_class = policy
+        self.round = 0
 
         self.sq = mp.Queue()
         self.aq = mp.Queue()
-        self.policy = policy(policy_args, board_size, self.sq, self.aq, logq, id)
+        self.mq = mp.Queue()
+        self.policy = policy(policy_args, board_size, self.sq, self.aq, self.mq, logq, id)
         self.policy.daemon = True
         self.policy.start()
 
@@ -150,26 +151,28 @@ class Player(object):
 
     def handle_state(self, round, state, reward):
         # remove previous states from queue if they weren't handled
-        if reward is not None:
-            self.cummulative_reward += reward
+        self.round = round
         clear_q(self.sq)
         self.sq.put((round, state, self.state(), reward))
 
     def get_action(self):
-        try: action = self.aq.get_nowait()
-        except queue.Empty: action = base_policy.Policy.DEFAULT_ACTION
+        try:
+            round, action = self.aq.get_nowait()
+            if round != self.round: raise queue.Empty()
+        except queue.Empty:
+            action = base_policy.Policy.DEFAULT_ACTION
         clear_q(self.aq)
         return action
 
     def shutdown(self):
         clear_q(self.sq)
-        self.sq.put(['get_state'])
-        clear_q(self.aq)
+        self.sq.put('get_state')
         try:
-            state = self.aq.get(timeout=Player.SHUTDOWN_TIMEOUT)
-            self.sq.put(None) #shutdown signal
+            state = self.mq.get(timeout=Player.SHUTDOWN_TIMEOUT)
         except queue.Empty:
-            state = None #policy is most probably dead
+            state = None   # policy is most probably dead
+        clear_q(self.aq)
+        self.sq.put(None)  # shutdown signal
         self.policy.join()
         return state
 
@@ -416,7 +419,7 @@ def parse_args():
     g = p.add_argument_group('Game')
     g.add_argument('--board_size', '-bs', type=str, default='(20,40)', help='a tuple of (height, width)')
     g.add_argument('--obstacle_density', '-od', type=float, default=.02, help='the density of obstacles on the board')
-    g.add_argument('--policy_wait_time', '-pwt', type=float, default=.001,
+    g.add_argument('--policy_wait_time', '-pwt', type=float, default=.01,
                    help='seconds to wait for policies to respond with actions')
     g.add_argument('--food_map', '-fm', type=str, default='(#,10,+1);($,20,+2);(%,50,+5)',
                    help='food icons and their respective reward, and growth effect')
