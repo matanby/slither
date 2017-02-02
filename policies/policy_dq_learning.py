@@ -11,23 +11,23 @@ from policies import base_policy as bp
 
 # noinspection PyAttributeOutsideInit
 class DeepQLearningPolicy(bp.Policy):
-    DEFAULT_LEARNING_RATE = 1e-2
+    DEFAULT_LEARNING_RATE = 1e-3
     DEFAULT_EXPLORATION_PROB = 0.3
-    MAX_MEMORY_STEPS = 1000
-    MIN_EXPLORATION_PROB = 0.05
+    MIN_EXPLORATION_PROB = 0.001
     EXPLORATION_PROP_DECAY_STEP = 1000
+    MAX_MEMORY_STEPS = 1000
     DEFAULT_GAMMA = 0.5
     MINI_BATCH_SIZE = 500
     RANDOM_BATCH_SAMPLE = False
-    OPTIMIZATION_STEP = 20
+    OPTIMIZATION_STEP = 50
     CROP_SIZE = 3
-    OBSERVATION_TIME = 400
+    OBSERVATION_TIME = 600
     FC_NETWORK = True
     DEATH_PENALTY = -100
     N_HIDDEN1_MIN = 32
     REWORD_PERCOLATION = 1
-    COMPRESS_STATE = False
-    SPLIT_LAYERS = False
+    COMPRESS_STATE = True
+    SPLIT_LAYERS = True
 
     DIRECTIONS_TO_IDX = {
         'N': 0,
@@ -96,10 +96,6 @@ class DeepQLearningPolicy(bp.Policy):
         if self.FC_NETWORK:
             n_hidden1 = max(self._state_size * 2, self.N_HIDDEN1_MIN)
 
-            # self._w1 = weight_var([self._state_size, self._num_actions])
-            # self._b1 = bias_var([self._num_actions])
-            # self._q_out = tf.matmul(self._s, self._w1) + self._b1
-
             self._w1 = weight_var([self._state_size, n_hidden1])
             self._b1 = bias_var([n_hidden1])
             self._h1 = tf.nn.relu(tf.matmul(self._s, self._w1) + self._b1)
@@ -118,37 +114,33 @@ class DeepQLearningPolicy(bp.Policy):
 
             s_reshaped = tf.reshape(self._s, [-1, 2 * self.crop_size + 1, 2 * self.crop_size + 1, self._board_objects_num])
 
-            w_conv1 = weight_var([2, 2, self._board_objects_num, 3])
-            b_conv1 = bias_var([3])
+            w_conv1 = weight_var([2, 2, self._board_objects_num, 5])
+            b_conv1 = bias_var([5])
 
             h_conv1 = tf.nn.relu(conv2d(s_reshaped, w_conv1) + b_conv1)
-            h_pool1 = max_pool_2x2(h_conv1)
 
-            w_conv2 = weight_var([2, 2, 3, 6])
-            b_conv2 = bias_var([6])
+            w_conv2 = weight_var([3, 3, 5, 10])
+            b_conv2 = bias_var([10])
 
-            h_conv2 = tf.nn.relu(conv2d(h_pool1, w_conv2) + b_conv2)
-            h_pool2 = max_pool_2x2(h_conv2)
+            h_conv2 = tf.nn.relu(conv2d(h_conv1, w_conv2) + b_conv2)
 
-            h_pool2_shape = h_pool2.get_shape()
-            new_dim = int(h_pool2_shape[1] * h_pool2_shape[2] * h_pool2_shape[3])
+            h_conv2_shape = h_conv2.get_shape()
+            new_dim = int(h_conv2_shape[1] * h_conv2_shape[2] * h_conv2_shape[3])
+            h_conv2_flat = tf.reshape(h_conv2, [-1, new_dim])
 
-            w_fc1 = weight_var([new_dim, self._num_actions])
-            b_fc1 = bias_var([self._num_actions])
+            w_fc1 = weight_var([new_dim, 512])
+            b_fc1 = bias_var([512])
+            h_fc1 = tf.nn.relu(tf.matmul(h_conv2_flat, w_fc1) + b_fc1)
 
-            h_pool2_flat = tf.reshape(h_pool2, [-1, new_dim])
-            self._q_out = tf.nn.relu(tf.matmul(h_pool2_flat, w_fc1) + b_fc1)
-
-            # h_fc1 = tf.nn.relu(tf.matmul(h_pool2_flat, W_fc1) + b_fc1)
-            # W_fc2 = weight_var([256, self._num_actions])
-            # b_fc2 = bias_var([self._num_actions])
-            # self._q_out = tf.matmul(h_fc1, W_fc2) + b_fc2
-            ###
+            w_fc2 = weight_var([512, self._num_actions])
+            b_fc2 = bias_var([self._num_actions])
+            self._q_out = tf.matmul(h_fc1, w_fc2) + b_fc2
 
         self._q_target = tf.placeholder(shape=[None, self._num_actions], dtype=tf.float32)
         self._action = tf.argmax(self._q_out, axis=1)
         self._loss = tf.reduce_mean(tf.reduce_sum(tf.square(self._q_target - self._q_out), reduction_indices=1))
-        self._optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self._loss)
+        self._learning_rate_ph = tf.placeholder(tf.float32)
+        self._optimizer = tf.train.AdamOptimizer(learning_rate=self._learning_rate_ph).minimize(self._loss)
         self._sess = tf.Session()
         self._sess.run(tf.global_variables_initializer())
 
@@ -160,16 +152,19 @@ class DeepQLearningPolicy(bp.Policy):
             self._memory.setdefault(t - 1, [None, None, None, None])
             self._memory[t - 1][3] = reward
 
-            # Percolate a positive reword to the previous steps.
-            if reward > 6:
-                for i in range(2, self.REWORD_PERCOLATION + 1):
-                    if t - i not in self._memory:
-                        break
+            if (self._time + 1) % 5000 == 0:
+                self.learning_rate /= 2
+                self.log('Lowering learning_rate to: %s' % self.learning_rate, type='optimization')
 
-                    if self._memory[t - i][3] is None or self._memory[t - i][3] == self.DEATH_PENALTY:
-                        break
-                    else:
-                        self._memory[t - i][3] += reward / i
+            # Percolate a positive reword to the previous steps.
+            for i in range(2, self.REWORD_PERCOLATION + 1):
+                if t - i not in self._memory:
+                    break
+
+                if self._memory[t - i][3] is None or self._memory[t - i][3] == self.DEATH_PENALTY:
+                    break
+                else:
+                    self._memory[t - i][3] += reward / i
 
             # Optimize our current policy function.
             if (self._time + 1) % self.OPTIMIZATION_STEP == 0:
@@ -188,6 +183,10 @@ class DeepQLearningPolicy(bp.Policy):
         try:
             start_time = time.time()
             self._time += 1
+
+            if (self._time + 1) % 5000 == 0:
+                self.OPTIMIZATION_STEP *= 2
+                self.log('Re-setting optimization_step to: %s' % self.OPTIMIZATION_STEP, type='optimization')
 
             # If the observation time is over, build the network
             if self.SPLIT_LAYERS:
@@ -362,7 +361,7 @@ class DeepQLearningPolicy(bp.Policy):
                 q_target[i, a1[i]] = r1[i] + self.gamma * np.max(q_s2[i])
 
         # Train the network using the target and predicted Q values.
-        _, avg_loss = self._sess.run([self._optimizer, self._loss], feed_dict={self._s: s1, self._q_target: q_target})
+        _, avg_loss = self._sess.run([self._optimizer, self._loss], feed_dict={self._s: s1, self._q_target: q_target, self._learning_rate_ph: self.learning_rate})
         avg_reward = np.mean(r1)
         self.log('time: %d, batch size: %s, avg reward: %.2f, avg loss: %s' % (self._time, batch_size, avg_reward, avg_loss), 'optimization')
 
