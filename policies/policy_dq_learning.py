@@ -17,7 +17,7 @@ class DeepQLearningPolicy(bp.Policy):
     MAX_MEMORY_STEPS = 1000
     MIN_EXPLORATION_PROB = 0.05
     EXPLORATION_PROP_DECAY_STEP = 1000
-    DEFAULT_GAMMA = 0.9
+    DEFAULT_GAMMA = 0.5
     MINI_BATCH_SIZE = 500
     RANDOM_BATCH_SAMPLE = False
     OPTIMIZATION_STEP = 20
@@ -45,7 +45,7 @@ class DeepQLearningPolicy(bp.Policy):
             'gamma': float(policy_args.get('g', self.DEFAULT_GAMMA)),
             'mini_batch_size': int(policy_args.get('bs', self.MINI_BATCH_SIZE)),
             'crop_size': int(policy_args.get('cs', self.CROP_SIZE)),
-            'heat_policy': bool(policy_args.get('hp', self.HEAT_POLICY)),
+            'heat_policy': policy_args.get('hp', self.HEAT_POLICY) == 'True',
         }
 
         # Log active configuration
@@ -146,7 +146,7 @@ class DeepQLearningPolicy(bp.Policy):
         self._loss = tf.reduce_mean(tf.reduce_sum(tf.square(self._q_target - self._q_out), reduction_indices=1))
         self._optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self._loss)
         self._sess = tf.Session()
-        self._sess.run(tf.initialize_all_variables())
+        self._sess.run(tf.global_variables_initializer())
 
     def learn(self, reward, t):
         try:
@@ -165,13 +165,13 @@ class DeepQLearningPolicy(bp.Policy):
                     if self._memory[t - i][3] is None or self._memory[t - i][3] == self.DEATH_PENALTY:
                         break
                     else:
-                        self._memory[t - i][3] += reward/i
+                        self._memory[t - i][3] += reward / i
 
             # Optimize our current policy function.
             if (self._time + 1) % self.OPTIMIZATION_STEP == 0:
                 self.optimize_policy()
 
-            if (t+1) % self.exploration_prop_decay_step == 0 and (self.exploration_prob / 2) > self.min_exploration_prob:
+            if (t + 1) % self.exploration_prop_decay_step == 0 and (self.exploration_prob / 2) > self.min_exploration_prob:
                 self.exploration_prob /= 2
                 self.log('lowering exploration_prob to: %.5f' % self.exploration_prob)
 
@@ -224,8 +224,8 @@ class DeepQLearningPolicy(bp.Policy):
             self._memory[t][0] = state_vec
             self._memory[t][1] = action
 
-            self._memory.setdefault(t-1, [None, None, None, None])
-            self._memory[t-1][2] = state_vec
+            self._memory.setdefault(t - 1, [None, None, None, None])
+            self._memory[t - 1][2] = state_vec
 
             # If our memory is full, remove the oldest item.
             if len(self._memory) > self.MAX_MEMORY_STEPS:
@@ -313,12 +313,12 @@ class DeepQLearningPolicy(bp.Policy):
                     temp = self.heat_map1 * result[:, :, i]
                 else:
                     temp = self.heat_map2 * result[:, :, i]
-            
+
                 up = temp[:center_0, :].mean()
                 right = temp[:, center_1 + 1:].mean()
                 left = temp[:, : center_1].mean()
 
-                features[i * 6 + 3] = 1 if up == max(up,right, left) else 0
+                features[i * 6 + 3] = 1 if up == max(up, right, left) else 0
                 features[i * 6 + 4] = 1 if right == max(up, right, left) else 0
                 features[i * 6 + 5] = 1 if left == max(up, right, left) else 0
 
@@ -364,7 +364,7 @@ class DeepQLearningPolicy(bp.Policy):
         # Train the network using the target and predicted Q values.
         _, avg_loss = self._sess.run([self._optimizer, self._loss], feed_dict={self._s: s1, self._q_target: q_target})
         avg_reward = np.mean(r1)
-        self.log('time: %d, batch size: %s, avg reward: %.2f, avg loss: %s' % (self._time, batch_size, avg_reward, avg_loss), 'optimization')
+        self.log('time: %d, batch size: %s, avg reward: %.2f, avg loss: %s' % (self._time, batch_size, avg_reward, avg_loss),'optimization')
 
     @staticmethod
     def create_heat_map_indicator(m, n):
