@@ -14,7 +14,7 @@ class DeepQLearningPolicy(bp.Policy):
     # TODO: problem with non square board.
     DEFAULT_LEARNING_RATE = 1e-2
     DEFAULT_EXPLORATION_PROB = 0.3
-    MAX_MEMORY_STEPS = 300
+    MAX_MEMORY_STEPS = 1000
     MIN_EXPLORATION_PROB = 0.05
     EXPLORATION_PROP_DECAY_STEP = 1000
     DEFAULT_GAMMA = 0.9
@@ -25,6 +25,9 @@ class DeepQLearningPolicy(bp.Policy):
     OBSERVATION_TIME = 400
     FC_NETWORK = True
     DEATH_PENALTY = -100
+    HEAT_POLICY = True
+    N_HIDDEN1_MIN = 32
+    REWORD_PERCOLATION = 1
 
     DIRECTIONS_TO_IDX = {
         'N': 0,
@@ -34,7 +37,7 @@ class DeepQLearningPolicy(bp.Policy):
     }
 
     def cast_string_args(self, policy_args):
-        return {
+        args = {
             'learning_rate': float(policy_args.get('lr', self.DEFAULT_LEARNING_RATE)),
             'exploration_prob': float(policy_args.get('e', self.DEFAULT_EXPLORATION_PROB)),
             'min_exploration_prob': float(policy_args.get('e_min', self.MIN_EXPLORATION_PROB)),
@@ -42,7 +45,14 @@ class DeepQLearningPolicy(bp.Policy):
             'gamma': float(policy_args.get('g', self.DEFAULT_GAMMA)),
             'mini_batch_size': int(policy_args.get('bs', self.MINI_BATCH_SIZE)),
             'crop_size': int(policy_args.get('cs', self.CROP_SIZE)),
+            'heat_policy': bool(policy_args.get('hp', self.HEAT_POLICY)),
         }
+
+        # Log active configuration
+        for name, value in args.items():
+            self.log('%s: %s' % (name, value), type='config')
+
+        return args
 
     def init_run(self):
         # Keep history of states, actions and rewards
@@ -59,18 +69,8 @@ class DeepQLearningPolicy(bp.Policy):
         self._board_height = self.board_size[0] if self.board_size[0] % 2 == 1 else self.board_size[0] - 1
         self._board_width = self.board_size[1] if self.board_size[1] % 2 == 1 else self.board_size[1] - 1
 
-        # TODO initialize hea map, optinal: normal + power
-        self.heat_map1 = self.create_hot_map_indicator(m=self._board_height, n=self._board_width)
-        self.heat_map2 = self.create_hot_map_indicator(n=self._board_height, m=self._board_width)
-
-        # Log active configuration
-        self.log('learning rate: %s' % self.learning_rate)
-        self.log('exploration_prob: %s' % self.exploration_prob)
-        self.log('min_exploration_prob: %s' % self.min_exploration_prob)
-        self.log('exploration_prop_decay_step: %s' % self.exploration_prop_decay_step)
-        self.log('gamma: %s' % self.gamma)
-        self.log('mini_batch_size: %s' % self.mini_batch_size)
-        self.log('crop_size: %s' % self.crop_size)
+        self.heat_map1 = self.create_heat_map_indicator(m=self._board_height, n=self._board_width)
+        self.heat_map2 = self.create_heat_map_indicator(n=self._board_height, m=self._board_width)
 
     def build_network(self):
         def weight_var(shape):
@@ -90,17 +90,17 @@ class DeepQLearningPolicy(bp.Policy):
         # Fully connected neural network.
         if self.FC_NETWORK:
             # TODO: this should optimized per the crop size and number of layers.
-            N_HIDDEN1 = 1024
+            n_hidden1 = max(self._state_size * 2, self.N_HIDDEN1_MIN)
 
             # self._w1 = weight_var([self._state_size, self._num_actions])
             # self._b1 = bias_var([self._num_actions])
             # self._q_out = tf.matmul(self._s, self._w1) + self._b1
 
-            self._w1 = weight_var([self._state_size, N_HIDDEN1])
-            self._b1 = bias_var([N_HIDDEN1])
+            self._w1 = weight_var([self._state_size, n_hidden1])
+            self._b1 = bias_var([n_hidden1])
             self._h1 = tf.nn.relu(tf.matmul(self._s, self._w1) + self._b1)
 
-            self._w2 = weight_var([N_HIDDEN1, self._num_actions])
+            self._w2 = weight_var([n_hidden1, self._num_actions])
             self._b2 = bias_var([self._num_actions])
             self._q_out = tf.matmul(self._h1, self._w2) + self._b2
 
@@ -114,26 +114,26 @@ class DeepQLearningPolicy(bp.Policy):
 
             s_reshaped = tf.reshape(self._s, [-1, 2 * self.crop_size + 1, 2 * self.crop_size + 1, self._board_objects_num])
 
-            W_conv1 = weight_var([2, 2, self._board_objects_num, 3])
+            w_conv1 = weight_var([2, 2, self._board_objects_num, 3])
             b_conv1 = bias_var([3])
 
-            h_conv1 = tf.nn.relu(conv2d(s_reshaped, W_conv1) + b_conv1)
+            h_conv1 = tf.nn.relu(conv2d(s_reshaped, w_conv1) + b_conv1)
             h_pool1 = max_pool_2x2(h_conv1)
 
-            W_conv2 = weight_var([2, 2, 3, 6])
+            w_conv2 = weight_var([2, 2, 3, 6])
             b_conv2 = bias_var([6])
 
-            h_conv2 = tf.nn.relu(conv2d(h_pool1, W_conv2) + b_conv2)
+            h_conv2 = tf.nn.relu(conv2d(h_pool1, w_conv2) + b_conv2)
             h_pool2 = max_pool_2x2(h_conv2)
 
             h_pool2_shape = h_pool2.get_shape()
             new_dim = int(h_pool2_shape[1] * h_pool2_shape[2] * h_pool2_shape[3])
 
-            W_fc1 = weight_var([new_dim, self._num_actions])
+            w_fc1 = weight_var([new_dim, self._num_actions])
             b_fc1 = bias_var([self._num_actions])
 
             h_pool2_flat = tf.reshape(h_pool2, [-1, new_dim])
-            self._q_out = tf.nn.relu(tf.matmul(h_pool2_flat, W_fc1) + b_fc1)
+            self._q_out = tf.nn.relu(tf.matmul(h_pool2_flat, w_fc1) + b_fc1)
 
             # h_fc1 = tf.nn.relu(tf.matmul(h_pool2_flat, W_fc1) + b_fc1)
             # W_fc2 = weight_var([256, self._num_actions])
@@ -153,8 +153,19 @@ class DeepQLearningPolicy(bp.Policy):
             if self._time <= self.OBSERVATION_TIME + 1:
                 return
 
-            self._memory.setdefault(t-1, [None, None, None, None])
-            self._memory[t-1][3] = reward
+            self._memory.setdefault(t - 1, [None, None, None, None])
+            self._memory[t - 1][3] = reward
+
+            # Percolate a positive reword to the previous steps.
+            if reward > 6:
+                for i in range(2, self.REWORD_PERCOLATION + 1):
+                    if t - i not in self._memory:
+                        break
+
+                    if self._memory[t - i][3] is None or self._memory[t - i][3] == self.DEATH_PENALTY:
+                        break
+                    else:
+                        self._memory[t - i][3] += reward/i
 
             # Optimize our current policy function.
             if (self._time + 1) % self.OPTIMIZATION_STEP == 0:
@@ -182,8 +193,10 @@ class DeepQLearningPolicy(bp.Policy):
             elif self._time == self.OBSERVATION_TIME:
                 self.log('Finished observation time, num of board objects: %d' % self._board_objects_num)
                 self.log('Objects: %s' % str(self._board_objects))
-                # self._state_size = (2 * self.crop_size + 1) ** 2 * self._board_objects_num  # TODO changa!!
-                self._state_size = 6 * self._board_objects_num
+                if self.heat_policy:
+                    self._state_size = 6 * self._board_objects_num
+                else:
+                    self._state_size = (2 * self.crop_size + 1) ** 2 * self._board_objects_num
                 self.build_network()
 
             # Choose an action by trying to avoid collisions.
@@ -263,12 +276,13 @@ class DeepQLearningPolicy(bp.Policy):
         elif direction == 'W':
             state = rotate(rotate(rotate(state)))
 
-        # center_0 = self._board_height // 2
-        # center_1 = self._board_width // 2
-        # state = state[
-        #         center_0 - self.crop_size: center_0 + self.crop_size + 1,
-        #         center_1 - self.crop_size: center_1 + self.crop_size + 1
-        # ]
+        if not self.heat_policy:
+            center_0 = self._board_height // 2
+            center_1 = self._board_width // 2
+            state = state[
+                    center_0 - self.crop_size: center_0 + self.crop_size + 1,
+                    center_1 - self.crop_size: center_1 + self.crop_size + 1
+            ]
 
         return state
 
@@ -281,25 +295,34 @@ class DeepQLearningPolicy(bp.Policy):
             result[state != obj, i] = 0
             result[state == obj, self._board_objects_num - 1] = 0
 
-        center_0 = self._board_height // 2
-        center_1 = self._board_width // 2
-        features = np.zeros((self._board_objects_num * 6, 1))
-        for i in range(self._board_objects_num):
-            # indicators per object:
-            features[i * 6] = result[center_0 - 1, center_1, i]  # up
-            features[i * 6 + 1] = result[center_0, center_1 + 1, i]  # right
-            features[i * 6 + 2] = result[center_0, center_1 - 1, i]  # left
+        if not self.heat_policy:
+            return result
 
-            # heat map per object:
-            if result[:, :, i].shape == self.heat_map1.shape:
-                temp = self.heat_map1 * result[:, :, i]
-            else:
-                temp = self.heat_map2 * result[:, :, i]
-            features[i * 6 + 3] = temp[:center_0, :].mean()  # up
-            features[i * 6 + 4] = temp[:, center_1 + 1:].mean()  # right
-            features[i * 6 + 5] = temp[:, : center_1].mean()  # left
+        else:
+            center_0 = self._board_height // 2
+            center_1 = self._board_width // 2
+            features = np.zeros((self._board_objects_num * 6, 1))
+            for i in range(self._board_objects_num):
+                # indicators per object:
+                features[i * 6] = result[center_0 - 1, center_1, i]  # up
+                features[i * 6 + 1] = result[center_0, center_1 + 1, i]  # right
+                features[i * 6 + 2] = result[center_0, center_1 - 1, i]  # left
 
-        return features
+                # heat map per object:
+                if result[:, :, i].shape == self.heat_map1.shape:
+                    temp = self.heat_map1 * result[:, :, i]
+                else:
+                    temp = self.heat_map2 * result[:, :, i]
+            
+                up = temp[:center_0, :].mean()
+                right = temp[:, center_1 + 1:].mean()
+                left = temp[:, : center_1].mean()
+
+                features[i * 6 + 3] = 1 if up == max(up,right, left) else 0
+                features[i * 6 + 4] = 1 if right == max(up, right, left) else 0
+                features[i * 6 + 5] = 1 if left == max(up, right, left) else 0
+
+            return features
 
     def get_state(self):
         # TODO: implement.
@@ -343,11 +366,12 @@ class DeepQLearningPolicy(bp.Policy):
         avg_reward = np.mean(r1)
         self.log('time: %d, batch size: %s, avg reward: %.2f, avg loss: %s' % (self._time, batch_size, avg_reward, avg_loss), 'optimization')
 
-    def create_hot_map_indicator(self, m, n):
+    @staticmethod
+    def create_heat_map_indicator(m, n):
         x = np.exp(-np.power(np.linspace(-np.sqrt(n), np.sqrt(n), n), 2.) / (2 * np.power(2, 2.)))
         y = np.exp(-np.power(np.linspace(-np.sqrt(m), np.sqrt(m), m), 2.) / (2 * np.power(2, 2.)))
-        meshX, meshY = np.meshgrid(x, y)
-        map = meshX + meshY
-        map /= np.max(map)
-        map **= 2
-        return map
+        mesh_x, mesh_y = np.meshgrid(x, y)
+        heat_map = mesh_x + mesh_y
+        heat_map /= np.max(heat_map)
+        heat_map **= 2
+        return heat_map
