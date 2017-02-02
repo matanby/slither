@@ -11,6 +11,7 @@ from policies import base_policy as bp
 
 # noinspection PyAttributeOutsideInit
 class DeepQLearningPolicy(bp.Policy):
+    # TODO: problem with non square board.
     DEFAULT_LEARNING_RATE = 1e-2
     DEFAULT_EXPLORATION_PROB = 0.3
     MAX_MEMORY_STEPS = 300
@@ -57,6 +58,10 @@ class DeepQLearningPolicy(bp.Policy):
 
         self._board_height = self.board_size[0] if self.board_size[0] % 2 == 1 else self.board_size[0] - 1
         self._board_width = self.board_size[1] if self.board_size[1] % 2 == 1 else self.board_size[1] - 1
+
+        # TODO initialize hea map, optinal: normal + power
+        self.heat_map1 = self.create_hot_map_indicator(m=self._board_height, n=self._board_width)
+        self.heat_map2 = self.create_hot_map_indicator(n=self._board_height, m=self._board_width)
 
         # Log active configuration
         self.log('learning rate: %s' % self.learning_rate)
@@ -177,7 +182,8 @@ class DeepQLearningPolicy(bp.Policy):
             elif self._time == self.OBSERVATION_TIME:
                 self.log('Finished observation time, num of board objects: %d' % self._board_objects_num)
                 self.log('Objects: %s' % str(self._board_objects))
-                self._state_size = (2 * self.crop_size + 1) ** 2 * self._board_objects_num
+                # self._state_size = (2 * self.crop_size + 1) ** 2 * self._board_objects_num  # TODO changa!!
+                self._state_size = 6 * self._board_objects_num
                 self.build_network()
 
             # Choose an action by trying to avoid collisions.
@@ -225,13 +231,12 @@ class DeepQLearningPolicy(bp.Policy):
             return random.choice(self.ACTIONS)
 
     def avoid_collisions(self, state, player_state):
-        player_head = player_state['chain'][-1]
+        head_pos = player_state['chain'][-1]
         a = self.ACTIONS[min(np.random.randint(20), 2)]  # 10% of actions are random
-        for action in [a] + list(np.random.permutation(bp.Policy.ACTIONS)):
-            r, c = player_head.move(bp.Policy.TURNS[player_state['dir']][action]) % state.shape
-            if state[r, c] <= 0:
-                return action
-            return action
+        for a in [a] + list(np.random.permutation(self.ACTIONS)):
+            r, c = head_pos.move(bp.Policy.TURNS[player_state['dir']][a]) % state.shape
+            if state[r, c] <= 0: return a
+        return a
 
     def normalize_state(self, state, axis0, axis1, direction):
         axis0 = axis0 % self.board_size[0]
@@ -258,12 +263,12 @@ class DeepQLearningPolicy(bp.Policy):
         elif direction == 'W':
             state = rotate(rotate(rotate(state)))
 
-        center_0 = self._board_height // 2
-        center_1 = self._board_width // 2
-        state = state[
-                center_0 - self.crop_size: center_0 + self.crop_size + 1,
-                center_1 - self.crop_size: center_1 + self.crop_size + 1
-        ]
+        # center_0 = self._board_height // 2
+        # center_1 = self._board_width // 2
+        # state = state[
+        #         center_0 - self.crop_size: center_0 + self.crop_size + 1,
+        #         center_1 - self.crop_size: center_1 + self.crop_size + 1
+        # ]
 
         return state
 
@@ -276,7 +281,25 @@ class DeepQLearningPolicy(bp.Policy):
             result[state != obj, i] = 0
             result[state == obj, self._board_objects_num - 1] = 0
 
-        return result
+        center_0 = self._board_height // 2
+        center_1 = self._board_width // 2
+        features = np.zeros((self._board_objects_num * 6, 1))
+        for i in range(self._board_objects_num):
+            # indicators per object:
+            features[i * 6] = result[center_0 - 1, center_1, i]  # up
+            features[i * 6 + 1] = result[center_0, center_1 + 1, i]  # right
+            features[i * 6 + 2] = result[center_0, center_1 - 1, i]  # left
+
+            # heat map per object:
+            if result[:, :, i].shape == self.heat_map1.shape:
+                temp = self.heat_map1 * result[:, :, i]
+            else:
+                temp = self.heat_map2 * result[:, :, i]
+            features[i * 6 + 3] = temp[:center_0, :].mean()  # up
+            features[i * 6 + 4] = temp[:, center_1 + 1:].mean()  # right
+            features[i * 6 + 5] = temp[:, : center_1].mean()  # left
+
+        return features
 
     def get_state(self):
         # TODO: implement.
@@ -319,3 +342,12 @@ class DeepQLearningPolicy(bp.Policy):
         _, avg_loss = self._sess.run([self._optimizer, self._loss], feed_dict={self._s: s1, self._q_target: q_target})
         avg_reward = np.mean(r1)
         self.log('time: %d, batch size: %s, avg reward: %.2f, avg loss: %s' % (self._time, batch_size, avg_reward, avg_loss), 'optimization')
+
+    def create_hot_map_indicator(self, m, n):
+        x = np.exp(-np.power(np.linspace(-np.sqrt(n), np.sqrt(n), n), 2.) / (2 * np.power(2, 2.)))
+        y = np.exp(-np.power(np.linspace(-np.sqrt(m), np.sqrt(m), m), 2.) / (2 * np.power(2, 2.)))
+        meshX, meshY = np.meshgrid(x, y)
+        map = meshX + meshY
+        map /= np.max(map)
+        map **= 2
+        return map
