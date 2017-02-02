@@ -11,7 +11,6 @@ from policies import base_policy as bp
 
 # noinspection PyAttributeOutsideInit
 class DeepQLearningPolicy(bp.Policy):
-    # TODO: problem with non square board.
     DEFAULT_LEARNING_RATE = 1e-2
     DEFAULT_EXPLORATION_PROB = 0.3
     MAX_MEMORY_STEPS = 1000
@@ -25,9 +24,10 @@ class DeepQLearningPolicy(bp.Policy):
     OBSERVATION_TIME = 400
     FC_NETWORK = True
     DEATH_PENALTY = -100
-    HEAT_POLICY = True
     N_HIDDEN1_MIN = 32
     REWORD_PERCOLATION = 1
+    COMPRESS_STATE = False
+    SPLIT_LAYERS = False
 
     DIRECTIONS_TO_IDX = {
         'N': 0,
@@ -45,7 +45,7 @@ class DeepQLearningPolicy(bp.Policy):
             'gamma': float(policy_args.get('g', self.DEFAULT_GAMMA)),
             'mini_batch_size': int(policy_args.get('bs', self.MINI_BATCH_SIZE)),
             'crop_size': int(policy_args.get('cs', self.CROP_SIZE)),
-            'heat_policy': policy_args.get('hp', self.HEAT_POLICY) == 'True',
+            'heat_policy': policy_args.get('hp', self.COMPRESS_STATE) == 'True',
         }
 
         # Log active configuration
@@ -61,16 +61,21 @@ class DeepQLearningPolicy(bp.Policy):
 
         # Init a set where board items will be saved while running in observation mode.
         self._board_objects = set()
-        self._board_objects_num = -1
+        self._board_objects_num = 1
 
         # Initialize a counter of the current timestamp.
         self._time = 0
 
         self._board_height = self.board_size[0] if self.board_size[0] % 2 == 1 else self.board_size[0] - 1
         self._board_width = self.board_size[1] if self.board_size[1] % 2 == 1 else self.board_size[1] - 1
+        
+        if self.COMPRESS_STATE:
+            self.heat_map1 = self.create_heat_map_indicator(m=self._board_height, n=self._board_width)
+            self.heat_map2 = self.create_heat_map_indicator(n=self._board_height, m=self._board_width)
 
-        self.heat_map1 = self.create_heat_map_indicator(m=self._board_height, n=self._board_width)
-        self.heat_map2 = self.create_heat_map_indicator(n=self._board_height, m=self._board_width)
+        if not self.SPLIT_LAYERS:
+            self._state_size = (2 * self.crop_size + 1) ** 2
+            self.build_network()
 
     def build_network(self):
         def weight_var(shape):
@@ -89,7 +94,6 @@ class DeepQLearningPolicy(bp.Policy):
 
         # Fully connected neural network.
         if self.FC_NETWORK:
-            # TODO: this should optimized per the crop size and number of layers.
             n_hidden1 = max(self._state_size * 2, self.N_HIDDEN1_MIN)
 
             # self._w1 = weight_var([self._state_size, self._num_actions])
@@ -150,7 +154,7 @@ class DeepQLearningPolicy(bp.Policy):
 
     def learn(self, reward, t):
         try:
-            if self._time <= self.OBSERVATION_TIME + 1:
+            if self._time <= self.OBSERVATION_TIME + 1 and self.SPLIT_LAYERS:
                 return
 
             self._memory.setdefault(t - 1, [None, None, None, None])
@@ -186,27 +190,30 @@ class DeepQLearningPolicy(bp.Policy):
             self._time += 1
 
             # If the observation time is over, build the network
-            if self._time < self.OBSERVATION_TIME:
-                self._board_objects |= set(state.flatten())
-                self._board_objects_num = len(self._board_objects) + 1
+            if self.SPLIT_LAYERS:
+                if self._time < self.OBSERVATION_TIME:
+                    self._board_objects |= set(state.flatten())
+                    self._board_objects_num = len(self._board_objects) + 1
 
-            elif self._time == self.OBSERVATION_TIME:
-                self.log('Finished observation time, num of board objects: %d' % self._board_objects_num)
-                self.log('Objects: %s' % str(self._board_objects))
-                if self.heat_policy:
-                    self._state_size = 6 * self._board_objects_num
-                else:
-                    self._state_size = (2 * self.crop_size + 1) ** 2 * self._board_objects_num
-                self.build_network()
+                    # Choose an action by trying to avoid collisions.
+                    return self.avoid_collisions(state, player_state)
 
-            # Choose an action by trying to avoid collisions.
-            if self._time < self.OBSERVATION_TIME:
-                return self.avoid_collisions(state, player_state)
+                elif self._time == self.OBSERVATION_TIME:
+                    self.log('Finished observation time, num of board objects: %d' % self._board_objects_num)
+                    self.log('Objects: %s' % str(self._board_objects))
+                    if self.heat_policy:
+                        self._state_size = 6 * self._board_objects_num
+                    else:
+                        self._state_size = (2 * self.crop_size + 1) ** 2 * self._board_objects_num
+                    self.build_network()
 
             player_head = player_state['chain'][-1]
             player_direction = player_state['dir']
             state_norm = self.normalize_state(state, player_head[0], player_head[1], player_direction)
-            state_norm = self.split_layers(state_norm)
+            
+            if self.SPLIT_LAYERS:
+                state_norm = self.split_layers(state_norm)
+
             state_vec = state_norm.reshape((1, self._state_size))
 
             # Choose an e-greedy action.
@@ -214,11 +221,6 @@ class DeepQLearningPolicy(bp.Policy):
                 action = np.random.randint(0, len(self.ACTIONS))
             else:
                 action = int(self._sess.run([self._action], feed_dict={self._s: state_vec})[0])
-
-            # TODO: remove
-            if self._time % 20 == 0 and self._time > self.OBSERVATION_TIME:
-                q_out = self._sess.run([self._q_out], feed_dict={self._s: state_vec})[0]
-                self.log('%s' % q_out)
 
             self._memory.setdefault(t, [None, None, None, None])
             self._memory[t][0] = state_vec
@@ -231,7 +233,6 @@ class DeepQLearningPolicy(bp.Policy):
             if len(self._memory) > self.MAX_MEMORY_STEPS:
                 self._memory.popitem(last=False)
 
-            # TODO: make sure this is slowing down the act function too much!
             total_time = (time.time() - start_time) * 1000
             # self.log('total act time (ms): %.2f' % total_time)
 
@@ -325,7 +326,6 @@ class DeepQLearningPolicy(bp.Policy):
             return features
 
     def get_state(self):
-        # TODO: implement.
         return None
 
     def optimize_policy(self):
@@ -364,7 +364,7 @@ class DeepQLearningPolicy(bp.Policy):
         # Train the network using the target and predicted Q values.
         _, avg_loss = self._sess.run([self._optimizer, self._loss], feed_dict={self._s: s1, self._q_target: q_target})
         avg_reward = np.mean(r1)
-        self.log('time: %d, batch size: %s, avg reward: %.2f, avg loss: %s' % (self._time, batch_size, avg_reward, avg_loss),'optimization')
+        self.log('time: %d, batch size: %s, avg reward: %.2f, avg loss: %s' % (self._time, batch_size, avg_reward, avg_loss), 'optimization')
 
     @staticmethod
     def create_heat_map_indicator(m, n):
