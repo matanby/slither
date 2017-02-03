@@ -45,7 +45,7 @@ class DeepQLearningPolicy(bp.Policy):
             'gamma': float(policy_args.get('g', self.DEFAULT_GAMMA)),
             'mini_batch_size': int(policy_args.get('bs', self.MINI_BATCH_SIZE)),
             'crop_size': int(policy_args.get('cs', self.CROP_SIZE)),
-            'heat_policy': policy_args.get('hp', self.COMPRESS_STATE) == 'True',
+            'heat_policy': policy_args.get('hp', self.COMPRESS_STATE) in [True, 'True'],
         }
 
         # Log active configuration
@@ -277,8 +277,8 @@ class DeepQLearningPolicy(bp.Policy):
             state = rotate(rotate(rotate(state)))
 
         if not self.heat_policy:
-            center_0 = self._board_height // 2
-            center_1 = self._board_width // 2
+            center_0 = state.shape[0] // 2
+            center_1 = state.shape[1] // 2
             state = state[
                     center_0 - self.crop_size: center_0 + self.crop_size + 1,
                     center_1 - self.crop_size: center_1 + self.crop_size + 1
@@ -299,8 +299,8 @@ class DeepQLearningPolicy(bp.Policy):
             return result
 
         else:
-            center_0 = self._board_height // 2
-            center_1 = self._board_width // 2
+            center_0 = state.shape[0] // 2
+            center_1 = state.shape[1] // 2
             features = np.zeros((self._board_objects_num * 6, 1))
             for i in range(self._board_objects_num):
                 # indicators per object:
